@@ -24,12 +24,10 @@ void USBD_IRQHandler(void)
         if (USBD_IS_ATTACHED())
         {
             USBD_ENABLE_USB();
-            LOG_INFO("[USB] Cable Plugged In\r\n");
         }
         else
         {
             USBD_DISABLE_USB();
-            LOG_INFO("[USB] Cable Unplugged\r\n");
         }
     }
 
@@ -42,17 +40,14 @@ void USBD_IRQHandler(void)
         {
             USBD_ENABLE_USB();
             USBD_SwReset();
-            LOG_INFO("[USB] Bus Reset\r\n");
         }
         if (u32State & USBD_STATE_SUSPEND)
         {
             USBD_DISABLE_PHY();
-            LOG_DEBUG("[USB] Bus Suspend\r\n");
         }
         if (u32State & USBD_STATE_RESUME)
         {
             USBD_ENABLE_USB();
-            LOG_DEBUG("[USB] Bus Resume\r\n");
         }
     }
 
@@ -149,6 +144,17 @@ int32_t main(void)
                      g_stats.usb_in_count, g_stats.usb_out_count, g_stats.can_bus_err_count);
             LOG_INFO("[CAN_DBG] CCCR=0x%08X TEST=0x%08X PSR=0x%08X IR=0x%08X TXBRP=0x%02X TXBTO=0x%02X RXF0S=0x%08X\r\n",
                      CANFD0->CCCR, CANFD0->TEST, CANFD0->PSR, CANFD0->IR, CANFD0->TXBRP, CANFD0->TXBTO, CANFD0->RXF0S);
+
+            if (g_usb_trace_idx > 0)
+            {
+                uint8_t count = (g_usb_trace_idx > 16) ? 16 : g_usb_trace_idx;
+                for (uint8_t i = 0; i < count; i++)
+                {
+                    LOG_INFO("[USB_TRC %u] Type=0x%02X Req=0x%02X Val=0x%04X Idx=0x%04X Len=%u\r\n",
+                             i, g_usb_trace[i].req_type, g_usb_trace[i].req_code,
+                             g_usb_trace[i].wValue, g_usb_trace[i].wIndex, g_usb_trace[i].wLength);
+                }
+            }
         }
     }
 }

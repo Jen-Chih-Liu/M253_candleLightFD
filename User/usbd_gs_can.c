@@ -126,6 +126,10 @@ void usbd_gs_can_class_request(void)
     USBD_SET_EP_STALL(EP1);
 }
 
+/* RAM Trace Buffer for Debugging */
+volatile usb_trace_t g_usb_trace[16];
+volatile uint8_t g_usb_trace_idx = 0;
+
 /* Vendor Request Handler (EP0) */
 void usbd_gs_can_vendor_request(void)
 {
@@ -134,6 +138,16 @@ void usbd_gs_can_vendor_request(void)
     uint16_t wValue  = (uint16_t)(g_USBD_au8SetupPacket[2] | (g_USBD_au8SetupPacket[3] << 8));
     uint16_t wIndex  = (uint16_t)(g_USBD_au8SetupPacket[4] | (g_USBD_au8SetupPacket[5] << 8));
     uint16_t wLength = (uint16_t)(g_USBD_au8SetupPacket[6] | (g_USBD_au8SetupPacket[7] << 8));
+
+    if (g_usb_trace_idx < 16)
+    {
+        g_usb_trace[g_usb_trace_idx].req_type = req_type;
+        g_usb_trace[g_usb_trace_idx].req_code = req_code;
+        g_usb_trace[g_usb_trace_idx].wValue = wValue;
+        g_usb_trace[g_usb_trace_idx].wIndex = wIndex;
+        g_usb_trace[g_usb_trace_idx].wLength = wLength;
+        g_usb_trace_idx++;
+    }
     (void)wValue;
 
     /* 1. Microsoft WCID 1.0 (WinUSB) Requests */
@@ -144,6 +158,7 @@ void usbd_gs_can_vendor_request(void)
             uint32_t len = sizeof(gu8WcidCompatibleIdDesc);
             if (len > wLength) len = wLength;
             USBD_PrepareCtrlIn((uint8_t *)gu8WcidCompatibleIdDesc, len);
+            USBD_PrepareCtrlOut(0, 0UL);
             LOG_DEBUG("[USB] WCID: Compatible ID queried\r\n");
             return;
         }
@@ -152,6 +167,7 @@ void usbd_gs_can_vendor_request(void)
             uint32_t len = sizeof(gu8WcidExtPropertyDesc);
             if (len > wLength) len = wLength;
             USBD_PrepareCtrlIn((uint8_t *)gu8WcidExtPropertyDesc, len);
+            USBD_PrepareCtrlOut(0, 0UL);
             LOG_DEBUG("[USB] WCID: Ext Property GUID queried\r\n");
             return;
         }
@@ -175,7 +191,7 @@ void usbd_gs_can_vendor_request(void)
                 if (len > wLength) len = wLength;
                 memcpy(s_ep0_tx_buf, &dev_cfg, len);
                 USBD_PrepareCtrlIn(s_ep0_tx_buf, len);
-                LOG_INFO("[USB] BREQ: DEVICE_CONFIG\r\n");
+                USBD_PrepareCtrlOut(0, 0UL);
                 return;
             }
 
@@ -185,7 +201,7 @@ void usbd_gs_can_vendor_request(void)
                 if (len > wLength) len = wLength;
                 memcpy(s_ep0_tx_buf, &g_can_bt_const, len);
                 USBD_PrepareCtrlIn(s_ep0_tx_buf, len);
-                LOG_INFO("[USB] BREQ: BT_CONST (fclk=%u)\r\n", g_can_bt_const.fclk_can);
+                USBD_PrepareCtrlOut(0, 0UL);
                 return;
             }
 
@@ -195,7 +211,7 @@ void usbd_gs_can_vendor_request(void)
                 if (len > wLength) len = wLength;
                 memcpy(s_ep0_tx_buf, &g_can_bt_const_ext, len);
                 USBD_PrepareCtrlIn(s_ep0_tx_buf, len);
-                LOG_INFO("[USB] BREQ: BT_CONST_EXT\r\n");
+                USBD_PrepareCtrlOut(0, 0UL);
                 return;
             }
 
@@ -206,6 +222,7 @@ void usbd_gs_can_vendor_request(void)
                 if (len > wLength) len = wLength;
                 memcpy(s_ep0_tx_buf, &ts, len);
                 USBD_PrepareCtrlIn(s_ep0_tx_buf, len);
+                USBD_PrepareCtrlOut(0, 0UL);
                 return;
             }
 
@@ -217,6 +234,7 @@ void usbd_gs_can_vendor_request(void)
                 if (len > wLength) len = wLength;
                 memcpy(s_ep0_tx_buf, &term, len);
                 USBD_PrepareCtrlIn(s_ep0_tx_buf, len);
+                USBD_PrepareCtrlOut(0, 0UL);
                 return;
             }
 
@@ -228,6 +246,7 @@ void usbd_gs_can_vendor_request(void)
                 if (len > wLength) len = wLength;
                 memcpy(s_ep0_tx_buf, &state, len);
                 USBD_PrepareCtrlIn(s_ep0_tx_buf, len);
+                USBD_PrepareCtrlOut(0, 0UL);
                 return;
             }
 
@@ -242,7 +261,11 @@ void usbd_gs_can_vendor_request(void)
 
         if (wLength > 0 && wLength <= sizeof(s_ep0_rx_buf))
         {
+            USBD_SET_DATA1(EP1);
             USBD_PrepareCtrlOut(s_ep0_rx_buf, wLength);
+            /* Status stage: arm EP0 for IN token */
+            USBD_SET_DATA1(EP0);
+            USBD_SET_PAYLOAD_LEN(EP0, 0UL);
             return;
         }
         else
@@ -262,12 +285,15 @@ void usbd_gs_can_vendor_request(void)
 /* Control OUT Stage Completed */
 void usbd_gs_can_ctrl_out_done(void)
 {
+    if (s_u8PendingVendorReq == 0xFF)
+    {
+        return;
+    }
+
     switch (s_u8PendingVendorReq)
     {
         case GS_USB_BREQ_HOST_FORMAT:
         {
-            uint32_t val = *(uint32_t *)s_ep0_rx_buf;
-            LOG_INFO("[USB] Host Byte Order: 0x%08X\r\n", val);
             break;
         }
 
@@ -294,7 +320,6 @@ void usbd_gs_can_ctrl_out_done(void)
         case GS_USB_BREQ_IDENTIFY:
         {
             const struct gs_identify_mode *imode = (const struct gs_identify_mode *)s_ep0_rx_buf;
-            LOG_INFO("[USB] Identify mode: %u\r\n", imode->mode);
             led_set_identify(imode->mode != 0);
             break;
         }
@@ -304,10 +329,6 @@ void usbd_gs_can_ctrl_out_done(void)
     }
 
     s_u8PendingVendorReq = 0xFF;
-
-    /* Acknowledge Status Stage */
-    USBD_SET_DATA1(EP0);
-    USBD_SET_PAYLOAD_LEN(EP0, 0UL);
 }
 
 /* Bulk IN (EP2) Handler: Sends Chunks to Host */
