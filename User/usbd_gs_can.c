@@ -314,6 +314,14 @@ void usbd_gs_can_ctrl_out_done(void)
             const struct gs_device_mode *mode = (const struct gs_device_mode *)s_ep0_rx_buf;
             m253_canfd_set_mode(mode->mode, mode->flags);
             led_set_channel_active(mode->mode == GS_CAN_MODE_START);
+            if (mode->mode == GS_CAN_MODE_RESET)
+            {
+                s_tx_head = 0;
+                s_tx_tail = 0;
+                s_rx_head = 0;
+                s_rx_tail = 0;
+                s_out_assembly_len = 0;
+            }
             break;
         }
 
