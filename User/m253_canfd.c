@@ -94,18 +94,18 @@ void m253_canfd_init(void)
         s_tx_echo_pool[i].echo_id = 0xFFFFFFFF;
     }
 
-    /* Set default bit timings (500k nominal, 2M data) */
+    /* Set default bit timings (500k nominal @ 81.25% SP / SJW=3, 2M data @ 75.0% SP) */
     s_nominal_timing.brp = 6;
     s_nominal_timing.prop_seg = 3;
-    s_nominal_timing.phase_seg1 = 10;
-    s_nominal_timing.phase_seg2 = 2;
-    s_nominal_timing.sjw = 1;
+    s_nominal_timing.phase_seg1 = 9;
+    s_nominal_timing.phase_seg2 = 3;
+    s_nominal_timing.sjw = 3;
 
     s_data_timing.brp = 2;
-    s_data_timing.prop_seg = 3;
+    s_data_timing.prop_seg = 2;
     s_data_timing.phase_seg1 = 6;
-    s_data_timing.phase_seg2 = 2;
-    s_data_timing.sjw = 1;
+    s_data_timing.phase_seg2 = 3;
+    s_data_timing.sjw = 2;
 
     /* Leave CANFD in reset until host sends GS_CAN_MODE_START */
     s_bCanEnabled = false;
@@ -180,7 +180,7 @@ static void apply_hardware_config(void)
     CLK->CLKDIV4 = (CLK->CLKDIV4 & ~CLK_CLKDIV4_CANFD0DIV_Msk) | CLK_CLKDIV4_CANFD0(1);
 
     /* Explicitly configure Nominal and Data Bit Timing registers */
-    CANFD0->CCCR |= CANFD_CCCR_CCE_Msk;
+    CANFD0->CCCR |= (CANFD_CCCR_INIT_Msk | CANFD_CCCR_CCE_Msk);
 
     uint32_t tseg1 = s_nominal_timing.prop_seg + s_nominal_timing.phase_seg1;
     uint32_t dtseg1 = s_data_timing.prop_seg + s_data_timing.phase_seg1;
@@ -196,7 +196,38 @@ static void apply_hardware_config(void)
         uint32_t dbrp = (s_data_timing.brp > 0) ? (s_data_timing.brp - 1) : 0;
         uint32_t dntseg1 = (dtseg1 > 0) ? (dtseg1 - 1) : 0;
         uint32_t dntseg2 = (s_data_timing.phase_seg2 > 0) ? (s_data_timing.phase_seg2 - 1) : 0;
-        CANFD0->DBTP = ((dbrp & 0x1F) << 16) | ((dntseg1 & 0x1F) << 8) | ((dntseg2 & 0xF) << 4) | (dsjw & 0xF);
+        uint32_t u32Dbtp = ((dbrp & 0x1F) << 16) | ((dntseg1 & 0x1F) << 8) | ((dntseg2 & 0xF) << 4) | (dsjw & 0xF);
+
+        /* Transmitter Delay Compensation (TDC):
+         * For CAN FD high-speed data phase (2Mbps, 4Mbps, etc., dbrp <= 1), physical transceiver loop delay
+         * (120ns ~ 250ns) is significant compared to bit time (500ns for 2M, 250ns for 4M).
+         * Without TDC, the transmitter samples its own TX data on the RX pin before it returns, causing
+         * immediate Bit Errors (Form Error / Error Frame / Bus-off).
+         * Per Bosch M_CAN spec and Nuvoton M253 TRM:
+         * - When TDC is enabled, DBRP is limited to 0 or 1 (i.e. brp <= 2).
+         * - TDCO defines the Secondary Sample Point (SSP) offset from the transmitted edge.
+         *   SSP = measured transceiver delay + TDCO.
+         *   TDCO should equal the data phase sample point in minimum time quanta (mtq).
+         */
+        if (dbrp <= 1)
+        {
+            uint32_t u32DataBrp = (s_data_timing.brp > 0) ? s_data_timing.brp : 1;
+            uint32_t tdco = (dtseg1 + 1) * u32DataBrp;
+            if (tdco > 127) tdco = 127;
+
+            /* Set Secondary Sample Point offset (TDCF=0: filter window disabled, stop on RX falling edge) */
+            CANFD0->TDCR = (tdco << CANFD_TDCR_TDCO_Pos);
+            u32Dbtp |= CANFD_DBTP_TDC_Msk;
+
+            LOG_INFO("[CAN_CFG] TDC Enabled: TDCO=%lu mtq, TDCR=0x%08X\r\n",
+                     (unsigned long)tdco, (unsigned int)CANFD0->TDCR);
+        }
+        else
+        {
+            CANFD0->TDCR = 0;
+        }
+
+        CANFD0->DBTP = u32Dbtp;
     }
 
     /* Promiscuous Mode: Accept all non-matching frames to Rx FIFO 0 */
@@ -246,8 +277,8 @@ static void apply_hardware_config(void)
     /* Transition to Normal Operation */
     CANFD_RunToNormal(CANFD0, TRUE);
 
-    LOG_INFO("[CAN_CFG] CANFD Started: NBTP=0x%08X, DBTP=0x%08X, CCCR=0x%08X\r\n",
-             CANFD0->NBTP, CANFD0->DBTP, CANFD0->CCCR);
+    LOG_INFO("[CAN_CFG] CANFD Started: NBTP=0x%08X, DBTP=0x%08X, TDCR=0x%08X, CCCR=0x%08X\r\n",
+             CANFD0->NBTP, CANFD0->DBTP, CANFD0->TDCR, CANFD0->CCCR);
 }
 
 void m253_canfd_set_mode(uint32_t mode, uint32_t flags)
